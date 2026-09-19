@@ -1,0 +1,541 @@
+--- git commit ---
+5fbbadb5877def1d422c977fdaa7797358a38f30
+
+
+--- git status ---
+On branch main
+Your branch is up to date with 'origin/main'.
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   scripts/rsl_rl/play.py
+	modified:   scripts/rsl_rl/train.py
+	modified:   source/entertaining_biped_tasks/data/Robots/Aldebaran/Nao/configuration/nao_physics.usd
+	modified:   source/entertaining_biped_tasks/entertaining_biped_tasks/robots/aldebaran.py
+	modified:   source/entertaining_biped_tasks/entertaining_biped_tasks/tasks/manager_based/entertaining_biped_tasks/__init__.py
+	modified:   source/entertaining_biped_tasks/entertaining_biped_tasks/tasks/manager_based/entertaining_biped_tasks/agents/rsl_rl_ppo_cfg.py
+	modified:   source/entertaining_biped_tasks/entertaining_biped_tasks/tasks/manager_based/entertaining_biped_tasks/nao_env_cfg.py
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	nao_rl_lab/
+	nao_rl_mjlab/
+	xterra_mjlab/
+
+no changes added to commit (use "git add" and/or "git commit -a") 
+
+
+--- git diff ---
+diff --git a/scripts/rsl_rl/play.py b/scripts/rsl_rl/play.py
+index 256eafc..3e51061 100644
+--- a/scripts/rsl_rl/play.py
++++ b/scripts/rsl_rl/play.py
+@@ -54,9 +54,28 @@ from rsl_rl.runners import OnPolicyRunner
+ from isaaclab.envs import DirectMARLEnv, multi_agent_to_single_agent
+ from isaaclab.utils.assets import retrieve_file_path
+ from isaaclab.utils.dict import print_dict
+-from isaaclab.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
++from packaging import version
+ 
+-from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper, export_policy_as_jit, export_policy_as_onnx
++try:
++    from isaaclab_rl.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
++except ImportError:
++    try:
++        from isaaclab.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
++    except ImportError:
++        get_published_pretrained_checkpoint = None
++
++import importlib.metadata as metadata
++
++installed_version = metadata.version("rsl-rl-lib")
++
++from isaaclab_rl.rsl_rl import (
++    RslRlOnPolicyRunnerCfg,
++    RslRlVecEnvWrapper,
++    export_policy_as_jit,
++    export_policy_as_onnx,
++    handle_deprecated_rsl_rl_cfg,
++    handle_deprecated_rsl_rl_checkpoint,
++)
+ 
+ import isaaclab_tasks  # noqa: F401
+ from isaaclab_tasks.utils import get_checkpoint_path, parse_env_cfg
+@@ -71,6 +90,7 @@ def main():
+         args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric
+     )
+     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
++    agent_cfg = handle_deprecated_rsl_rl_cfg(agent_cfg, installed_version)
+ 
+     # specify directory for logging experiments
+     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
+@@ -86,6 +106,7 @@ def main():
+     else:
+         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
+ 
++    resume_path = handle_deprecated_rsl_rl_checkpoint(resume_path, installed_version)
+     log_dir = os.path.dirname(resume_path)
+ 
+     # create isaac environment
+@@ -112,32 +133,38 @@ def main():
+ 
+     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
+     # load previously trained model
+-    ppo_runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
++    if agent_cfg.class_name == "OnPolicyRunner":
++        ppo_runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
++    elif agent_cfg.class_name == "DistillationRunner":
++        from rsl_rl.runners import DistillationRunner
++        ppo_runner = DistillationRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
++    else:
++        raise ValueError(f"Unsupported runner class: {agent_cfg.class_name}")
+     ppo_runner.load(resume_path)
+ 
+     # obtain the trained policy for inference
+     policy = ppo_runner.get_inference_policy(device=env.unwrapped.device)
+ 
+-    # extract the neural network module
+-    # we do this in a try-except to maintain backwards compatibility.
+-    try:
+-        # version 2.3 onwards
+-        policy_nn = ppo_runner.alg.policy
+-    except AttributeError:
+-        # version 2.2 and below
+-        policy_nn = ppo_runner.alg.actor_critic
+-
+     # export policy to onnx/jit
+     export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
+-    export_policy_as_jit(policy_nn, ppo_runner.obs_normalizer, path=export_model_dir, filename="policy.pt")
+-    export_policy_as_onnx(
+-        policy_nn, normalizer=ppo_runner.obs_normalizer, path=export_model_dir, filename="policy.onnx"
+-    )
++    if version.parse(installed_version) >= version.parse("4.0.0"):
++        ppo_runner.export_policy_to_jit(path=export_model_dir, filename="policy.pt")
++        ppo_runner.export_policy_to_onnx(path=export_model_dir, filename="policy.onnx")
++    else:
++        try:
++            policy_nn = ppo_runner.alg.policy
++        except AttributeError:
++            policy_nn = ppo_runner.alg.actor_critic
++        normalizer = getattr(policy_nn, "actor_obs_normalizer", ppo_runner.obs_normalizer)
++        export_policy_as_jit(policy_nn, normalizer, path=export_model_dir, filename="policy.pt")
++        export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
+ 
+     dt = env.unwrapped.step_dt
+ 
+     # reset environment
+-    obs, _ = env.get_observations()
++    obs = env.get_observations()
++    if isinstance(obs, tuple):
++        obs = obs[0]
+     timestep = 0
+     # simulate environment
+     while simulation_app.is_running():
+@@ -147,7 +174,11 @@ def main():
+             # agent stepping
+             actions = policy(obs)
+             # env stepping
+-            obs, _, _, _ = env.step(actions)
++            obs, _, dones, _ = env.step(actions)
++            if isinstance(obs, tuple):
++                obs = obs[0]
++            if version.parse(installed_version) >= version.parse("4.0.0") and hasattr(policy, "reset"):
++                policy.reset(dones)
+         if args_cli.video:
+             timestep += 1
+             # Exit the play loop after recording one video
+diff --git a/scripts/rsl_rl/train.py b/scripts/rsl_rl/train.py
+index 3a7c27b..c464bc9 100644
+--- a/scripts/rsl_rl/train.py
++++ b/scripts/rsl_rl/train.py
+@@ -84,9 +84,9 @@ from isaaclab.envs import (
+     multi_agent_to_single_agent,
+ )
+ from isaaclab.utils.dict import print_dict
+-from isaaclab.utils.io import dump_pickle, dump_yaml
++from isaaclab.utils.io import dump_yaml
+ 
+-from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper
++from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper, handle_deprecated_rsl_rl_cfg
+ 
+ import isaaclab_tasks  # noqa: F401
+ from isaaclab_tasks.utils import get_checkpoint_path
+@@ -110,6 +110,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
+         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
+     )
+ 
++    # handle deprecated configurations
++    agent_cfg = handle_deprecated_rsl_rl_cfg(agent_cfg, installed_version)
++
+     # set the environment seed
+     # note: certain randomizations occur in the environment initialization so we set the seed here
+     env_cfg.seed = agent_cfg.seed
+@@ -164,7 +167,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
+     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
+ 
+     # create runner from rsl-rl
+-    runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
++    if agent_cfg.class_name == "OnPolicyRunner":
++        runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
++    elif agent_cfg.class_name == "DistillationRunner":
++        from rsl_rl.runners import DistillationRunner
++        runner = DistillationRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
++    else:
++        raise ValueError(f"Unsupported runner class: {agent_cfg.class_name}")
+     # write git state to logs
+     runner.add_git_repo_to_log(__file__)
+     # load the checkpoint
+@@ -176,8 +185,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
+     # dump the configuration into log-directory
+     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
+     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
+-    dump_pickle(os.path.join(log_dir, "params", "env.pkl"), env_cfg)
+-    dump_pickle(os.path.join(log_dir, "params", "agent.pkl"), agent_cfg)
+ 
+     # run training
+     runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
+diff --git a/source/entertaining_biped_tasks/data/Robots/Aldebaran/Nao/configuration/nao_physics.usd b/source/entertaining_biped_tasks/data/Robots/Aldebaran/Nao/configuration/nao_physics.usd
+index 1ba8be2..c2618ee 100644
+--- a/source/entertaining_biped_tasks/data/Robots/Aldebaran/Nao/configuration/nao_physics.usd
++++ b/source/entertaining_biped_tasks/data/Robots/Aldebaran/Nao/configuration/nao_physics.usd
+@@ -1,3 +1,3 @@
+ version https://git-lfs.github.com/spec/v1
+-oid sha256:457e9e82ac12e50f94003ba946becc7751b64ac8c507409e4cd4ec6ea4985f3c
+-size 13953
++oid sha256:e0a035900cc0b4a647477ce4e9447953792cd357eaa0c9414561e6880af03f6a
++size 15100
+diff --git a/source/entertaining_biped_tasks/entertaining_biped_tasks/robots/aldebaran.py b/source/entertaining_biped_tasks/entertaining_biped_tasks/robots/aldebaran.py
+index 3bcbcf7..1906411 100644
+--- a/source/entertaining_biped_tasks/entertaining_biped_tasks/robots/aldebaran.py
++++ b/source/entertaining_biped_tasks/entertaining_biped_tasks/robots/aldebaran.py
+@@ -103,14 +103,14 @@ NAO_CFG = ArticulationCfg(
+         "legs": ImplicitActuatorCfg(
+             joint_names_expr=[".*Hip.*", ".*Ankle.*", ".*Knee.*"],
+             stiffness={
+-                ".*Hip.*": 200.0,
+-                ".*Ankle.*": 80.0,
+-                ".*Knee.*": 120.0,
++                ".*Hip.*": 20.0,
++                ".*Knee.*": 10.0,
++                ".*Ankle.*": 2.0,
+             },
+             damping={
+-                ".*Hip.*": 20.0,
+-                ".*Ankle.*": 8.0,
+-                ".*Knee.*": 12.0,
++                ".*Hip.*": 5.0,
++                ".*Knee.*": 5.0,
++                ".*Ankle.*": 0.1,
+             },
+             effort_limit_sim={
+                 ".*Hip.*": 8.0,
+@@ -126,10 +126,12 @@ NAO_CFG = ArticulationCfg(
+         "arms": ImplicitActuatorCfg(
+             joint_names_expr=[".*Elbow.*", ".*Shoulder.*"],
+             stiffness={
+-                ".*": 100.0,
++                ".*Shoulder.*": 10.0,
++                ".*Elbow.*": 2.0,
+             },
+             damping={
+-                ".*": 10.0,
++                ".*Shoulder.*": 5.0,
++                ".*Elbow.*": 1.0,
+             },
+             effort_limit_sim=5.0,
+             velocity_limit_sim=7.0,
+@@ -137,10 +139,10 @@ NAO_CFG = ArticulationCfg(
+         "head": ImplicitActuatorCfg(
+             joint_names_expr=["Head.*"],
+             stiffness={
+-                ".*": 200.0,
++                ".*": 2.0,
+             },
+             damping={
+-                ".*": 20.0,
++                ".*": 2.0,
+             },
+             effort_limit_sim=8.0,
+             velocity_limit_sim=12.0,
+@@ -148,16 +150,16 @@ NAO_CFG = ArticulationCfg(
+         "hands": ImplicitActuatorCfg(
+             joint_names_expr=[".*Finger.*", ".*Thumb.*", ".*Wrist.*", ".*Hand.*"],
+             stiffness={
+-                ".*": 200.0,
++                ".*": 2.0,
+             },
+             damping={
+-                ".*": 20.0,
++                ".*": 0.1,
+             },
+         ),
+     },
+     soft_joint_pos_limit_factor=0.95,
+ )
+-"""Configuration for the Disney BD-X robot with implicit actuator model."""
++"""Configuration for the Aldebaran NAO robot with implicit actuator model."""
+ 
+ # torso
+ #  ├─ HeadYaw --> Neck
+diff --git a/source/entertaining_biped_tasks/entertaining_biped_tasks/tasks/manager_based/entertaining_biped_tasks/__init__.py b/source/entertaining_biped_tasks/entertaining_biped_tasks/tasks/manager_based/entertaining_biped_tasks/__init__.py
+index bddd446..efabc1a 100644
+--- a/source/entertaining_biped_tasks/entertaining_biped_tasks/tasks/manager_based/entertaining_biped_tasks/__init__.py
++++ b/source/entertaining_biped_tasks/entertaining_biped_tasks/tasks/manager_based/entertaining_biped_tasks/__init__.py
+@@ -30,4 +30,44 @@ gym.register(
+         "env_cfg_entry_point": f"{__name__}.nao_env_cfg:NAOFlatEnvCfg",
+         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PPORunnerNaoCfg",
+     },
++)
++
++gym.register(
++    id="Template-Nao-v1",
++    entry_point="isaaclab.envs:ManagerBasedRLEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.nao_env_cfg:NAOTunedFlatEnvCfg",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PPORunnerNaoTunedCfg",
++    },
++)
++
++gym.register(
++    id="Template-Nao-v1-Play",
++    entry_point="isaaclab.envs:ManagerBasedRLEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.nao_env_cfg:NAOTunedFlatEnvCfg_PLAY",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PPORunnerNaoTunedCfg",
++    },
++)
++
++gym.register(
++    id="Template-Nao-Play-v0",
++    entry_point="isaaclab.envs:ManagerBasedRLEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.nao_env_cfg:NAOTunedFlatEnvCfg_PLAY",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PPORunnerNaoCfg",
++    },
++)
++
++gym.register(
++    id="Template-Nao-v0-Play",
++    entry_point="isaaclab.envs:ManagerBasedRLEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.nao_env_cfg:NAOTunedFlatEnvCfg_PLAY",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PPORunnerNaoCfg",
++    },
+ )
+\ No newline at end of file
+diff --git a/source/entertaining_biped_tasks/entertaining_biped_tasks/tasks/manager_based/entertaining_biped_tasks/agents/rsl_rl_ppo_cfg.py b/source/entertaining_biped_tasks/entertaining_biped_tasks/tasks/manager_based/entertaining_biped_tasks/agents/rsl_rl_ppo_cfg.py
+index e5940ff..86b2a1b 100644
+--- a/source/entertaining_biped_tasks/entertaining_biped_tasks/tasks/manager_based/entertaining_biped_tasks/agents/rsl_rl_ppo_cfg.py
++++ b/source/entertaining_biped_tasks/entertaining_biped_tasks/tasks/manager_based/entertaining_biped_tasks/agents/rsl_rl_ppo_cfg.py
+@@ -64,3 +64,33 @@ class PPORunnerNaoCfg(RslRlOnPolicyRunnerCfg):
+         desired_kl=0.01,
+         max_grad_norm=1.0,
+     )
++
++
++@configclass
++class PPORunnerNaoTunedCfg(RslRlOnPolicyRunnerCfg):
++    num_steps_per_env = 24
++    max_iterations = 1500
++    save_interval = 50
++    experiment_name = "nao_tuned_flat"
++    empirical_normalization = False
++    policy = RslRlPpoActorCriticCfg(
++        init_noise_std=1.0,
++        actor_hidden_dims=[256, 128, 128],
++        critic_hidden_dims=[256, 128, 128],
++        activation="elu",
++    )
++    algorithm = RslRlPpoAlgorithmCfg(
++        value_loss_coef=1.0,
++        use_clipped_value_loss=True,
++        clip_param=0.2,
++        entropy_coef=0.01,
++        num_learning_epochs=5,
++        num_mini_batches=4,
++        learning_rate=1.0e-3,
++        schedule="adaptive",
++        gamma=0.99,
++        lam=0.95,
++        desired_kl=0.01,
++        max_grad_norm=1.0,
++    )
++
+diff --git a/source/entertaining_biped_tasks/entertaining_biped_tasks/tasks/manager_based/entertaining_biped_tasks/nao_env_cfg.py b/source/entertaining_biped_tasks/entertaining_biped_tasks/tasks/manager_based/entertaining_biped_tasks/nao_env_cfg.py
+index 9eec762..9868ef1 100644
+--- a/source/entertaining_biped_tasks/entertaining_biped_tasks/tasks/manager_based/entertaining_biped_tasks/nao_env_cfg.py
++++ b/source/entertaining_biped_tasks/entertaining_biped_tasks/tasks/manager_based/entertaining_biped_tasks/nao_env_cfg.py
+@@ -3,6 +3,7 @@
+ #
+ # SPDX-License-Identifier: BSD-3-Clause
+ 
++from isaaclab.managers import EventTermCfg as EventTerm
+ from isaaclab.managers import RewardTermCfg as RewTerm
+ from isaaclab.managers import SceneEntityCfg
+ from isaaclab.utils import configclass
+@@ -139,4 +140,157 @@ class NAOFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
+         self.scene.height_scanner = None
+         self.observations.policy.height_scan = None
+         # no terrain curriculum
+-        self.curriculum.terrain_levels = None
+\ No newline at end of file
++        self.curriculum.terrain_levels = None
++
++
++@configclass
++class NAOTunedRewards(RewardsCfg):
++    """Tuned reward terms for NAO biped locomotion."""
++
++    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
++    track_lin_vel_xy_exp = RewTerm(
++        func=mdp.track_lin_vel_xy_yaw_frame_exp,
++        weight=1.0,
++        params={"command_name": "base_velocity", "std": 0.25},
++    )
++    track_ang_vel_z_exp = RewTerm(
++        func=mdp.track_ang_vel_z_world_exp,
++        weight=1.0,
++        params={"command_name": "base_velocity", "std": 0.25},
++    )
++    feet_air_time = RewTerm(
++        func=mdp.feet_air_time,
++        weight=0.25,
++        params={
++            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle"),
++            "command_name": "base_velocity",
++            "threshold": 0.15,
++        },
++    )
++    feet_slide = RewTerm(
++        func=mdp.feet_slide,
++        weight=-0.25,
++        params={
++            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle"),
++            "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle"),
++        },
++    )
++    # penalize ankle joint limits
++    dof_pos_limits = RewTerm(
++        func=mdp.joint_pos_limits,
++        weight=-1.0,
++        params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*Ankle.*")},
++    )
++    # penalize deviation from default of the joints that are not essential for locomotion
++    joint_deviation_hip = RewTerm(
++        func=mdp.joint_deviation_l1,
++        weight=-0.2,
++        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*HipYawPitch", ".*HipRoll", ".*HipPitch"])},
++    )
++    joint_deviation_arm = RewTerm(
++        func=mdp.joint_deviation_l1,
++        weight=-0.2,
++        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*Elbow.*", ".*Shoulder.*", ".*Wrist.*"])},
++    )
++
++
++@configclass
++class NAOTunedFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
++    """NAO tuned flat environment configuration."""
++
++    rewards: NAOTunedRewards = NAOTunedRewards()
++
++    def __post_init__(self):
++        super().__post_init__()
++        # scene
++        self.scene.robot = NAO_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
++        self.scene.height_scanner.prim_path = "{ENV_REGEX_NS}/Robot/torso"
++
++        # actions
++        self.actions.joint_pos.scale = 0.5
++        self.actions.joint_pos.joint_names = [
++            ".*Hip.*",
++            ".*Ankle.*",
++            ".*Knee.*",
++            ".*Elbow.*",
++            ".*Shoulder.*",
++        ]
++        # events
++        self.events.push_robot = EventTerm(
++            func=mdp.push_by_setting_velocity,
++            mode="interval",
++            interval_range_s=(10.0, 15.0),
++            params={"velocity_range": {"x": (-0.2, 0.2), "y": (-0.2, 0.2)}},
++        )
++        self.events.physics_material.params["static_friction_range"] = (0.5, 1.25)
++        self.events.physics_material.params["dynamic_friction_range"] = (0.4, 1.0)
++        self.events.add_base_mass = None
++        self.events.reset_robot_joints.params["position_range"] = (1.0, 1.0)
++        self.events.base_external_force_torque.params["asset_cfg"].body_names = ["torso"]
++        self.events.reset_base.params = {
++            "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},
++            "velocity_range": {
++                "x": (0.0, 0.0),
++                "y": (0.0, 0.0),
++                "z": (0.0, 0.0),
++                "roll": (0.0, 0.0),
++                "pitch": (0.0, 0.0),
++                "yaw": (0.0, 0.0),
++            },
++        }
++        self.events.base_com = None
++
++        # terminations
++        self.terminations.base_contact.params["sensor_cfg"].body_names = [
++            "torso",
++            ".*ForeArm",
++        ]
++
++        # rewards
++        self.rewards.lin_vel_z_l2 = None
++        self.rewards.undesired_contacts = None
++        self.rewards.dof_torques_l2.weight = 0.0
++        self.rewards.action_rate_l2.weight = -0.005
++        self.rewards.dof_acc_l2.weight = -1.25e-7
++        self.rewards.flat_orientation_l2.weight = -1.0
++        self.rewards.feet_air_time.weight = 0.25
++        self.rewards.feet_air_time.params["threshold"] = 0.15
++
++        # commands (curated omnidirectional range for stable forward & backward walking)
++        self.commands.base_velocity.ranges.lin_vel_x = (-0.2, 0.6)
++        self.commands.base_velocity.ranges.lin_vel_y = (-0.15, 0.15)
++        self.commands.base_velocity.ranges.ang_vel_z = (-0.8, 0.8)
++
++        # change terrain
++        self.scene.terrain.terrain_type = "plane"
++        self.scene.terrain.terrain_generator = None
++
++        # no height scan
++        self.scene.height_scanner = None
++        self.observations.policy.height_scan = None
++        # no terrain curriculum
++        self.curriculum.terrain_levels = None
++
++
++@configclass
++class NAOTunedFlatEnvCfg_PLAY(NAOTunedFlatEnvCfg):
++    """NAO play / evaluation environment configuration."""
++
++    def __post_init__(self):
++        super().__post_init__()
++
++        # smaller scene for play
++        self.scene.num_envs = 32
++        self.scene.env_spacing = 2.5
++        self.episode_length_s = 40.0
++
++        # fixed command for evaluation
++        self.commands.base_velocity.ranges.lin_vel_x = (0, 0)
++        self.commands.base_velocity.ranges.lin_vel_y = (0, 0)
++        self.commands.base_velocity.ranges.ang_vel_z = (0.8, 0.8)
++        self.commands.base_velocity.ranges.heading = (0.0, 0.0)
++
++        # disable noise and perturbation for evaluation
++        self.observations.policy.enable_corruption = False
++        self.events.base_external_force_torque = None
++        self.events.push_robot = None
+\ No newline at end of file
