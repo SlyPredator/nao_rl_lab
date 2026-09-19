@@ -12,8 +12,8 @@ from isaaclab.utils import configclass
 
 from .nao_actuators import NAO_ACTUATOR_CFG
 
-# Resolve path to local assembled USD inside logs/usd/nao.usd
-_LOCAL_USD_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../logs/usd/nao.usd"))
+# Resolve path to local assembled USD inside robots/nao/usd/nao.usd
+_LOCAL_USD_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../robots/nao/usd/nao.usd"))
 
 
 def resolve_nao_usd_path() -> str:
