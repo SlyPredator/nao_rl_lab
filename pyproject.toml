@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nao_rl"
+version = "0.1.0"
+description = "IsaacLab Locomotion Extension for Aldebaran NAO"
+authors = [{ name = "NAO Locomotion Team" }]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    # Assumes IsaacLab and RSL-RL are already installed in the environment
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["nao_rl*"]
