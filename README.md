@@ -2,6 +2,17 @@
 
 This repository contains the standalone, lean **Manager-Based** IsaacLab implementation for the Aldebaran NAO humanoid robot locomotion environments.
 
+<table align="center">
+  <tr>
+    <td align="center"><a href="media/nao_flat_policy.gif"><img src="media/nao_flat_policy.gif" width="360px"></a></td>
+    <td align="center"><a href="media/nao_rough_policy.gif"><img src="media/nao_rough_policy.gif" width="360px"></a></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Flat Ground</b></td>
+    <td align="center"><b>Rough Ground</b></td>
+  </tr>
+</table>
+
 ## Prerequisites
 
 IsaacLab (and its PhysX / rsl-rl backend) runs on a CUDA GPU. This repository is tested and verified with:
